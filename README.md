@@ -10,9 +10,12 @@ Chega de planilhas manuais chatas! Apenas mande um texto para o bot dizendo *"Co
 - **Controle de Gastos Únicos**: Registra gastos do dia a dia (lanches, Uber, etc).
 - **Controle de Compras Parceladas (`/parceladas`)**: Gerencia gastos divididos em meses, acompanhando quantas parcelas faltam e o valor restante a pagar.
 - **Despesas Recorrentes (`/recorrentes`)**: Controla suas assinaturas (Netflix, Spotify, Internet) e o dia de cobrança de cada uma.
+- **Compras Compartilhadas / Divididas**: A IA consegue dividir valores matematicamente entre os envolvidos e salvar uma linha de registro dedicada para cada pessoa, separando o que é seu e o que vão te pagar.
 - **Gerenciamento de Cartões de Crédito**: Adicione seus cartões com dia de fechamento e vencimento, e associe seus gastos a eles.
+- **Fechamento de Fatura Inteligente**: Ao gerar relatórios, o bot realoca automaticamente os gastos em crédito para o "Mês de Referência" correto, se baseando no dia de fechamento do seu cartão (e não apenas no dia do mês em que você passou a compra).
 - **Gestão de Terceiros / Dívidas**: O bot entende se você gastou dinheiro de/com outra pessoa ou se pagou/emprestou dinheiro para alguém.
 - **Relatórios Mensais (`/relatorio`)**: Gera um resumo completo do mês agrupado por categoria, cartões, e fluxo de caixa de terceiros.
+- **Fuso Horário Adaptativo**: O sistema computa gastos e relatórios sincronizados automaticamente no fuso do Brasil (UTC-3), não importando o fuso do servidor de hospedagem.
 - **Controle de Acesso**: Sistema de permissão integrado. Somente usuários autorizados no banco de dados podem interagir com a Inteligência Artificial.
 
 ## 🛠️ Tecnologias Utilizadas

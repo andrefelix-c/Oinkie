@@ -131,9 +131,15 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔁 *Gasto recorrente:*\n"
         "_'Pago o Spotify todo mês, 21 reais no cartão Inter, todo dia 15'_\n"
         "→ salvo como recorrente com o dia da cobrança\n\n"
+        "👥 *Dividindo contas:*\n"
+        "_'Comprei uma pizza de 80 reais no Nubank e dividi com a Cecilia e o Thales'_\n"
+        "→ calculo a parte de cada um e separo pra você cobrar depois\n\n"
         "👤 *Gasto de outra pessoa:*\n"
         "_'Minha filha gastou 80 reais na farmácia ontem'_\n"
-        "→ registro quem fez o gasto\n\n"
+        "→ registro quem fez o gasto para separar do seu\n\n"
+        "💸 *Pagando dívidas ou terceiros:*\n"
+        "_'Paguei 50 reais que devia ao João'_\n"
+        "→ registro no fechamento de contas a receber/pagar\n\n"
         "📋 *Campos que eu entendo:*\n"
         "Data • Valor • Local • Categoria • Quem gastou • Cartão • Parcelas • Dia de cobrança • Observações\n\n"
         "💡 Quanto mais você informar, mais completo fica o registro!",
@@ -383,6 +389,14 @@ async def processar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         icone    = "🔁" if tipo == "recorrente" else "💳" if tipo == "parcelado" else "💸"
 
         resposta += f"\n\n{icone} *{gasto.get('descricao') or 'Gasto'}*"
+        
+        try:
+            dt_obj = datetime.fromisoformat(gasto["data_hora"])
+            data_formatada = dt_obj.strftime("%d/%m/%Y às %H:%M")
+        except:
+            data_formatada = str(gasto["data_hora"])
+            
+        resposta += f"\n• 📅 Data: {data_formatada}"
         resposta += f"\n• 🏪 Local: {gasto.get('estabelecimento') or '-'}"
         resposta += f"\n• 💰 Valor: R$ {gasto.get('valor', 0):.2f}{parcelas}"
         resposta += f"\n• 💳 Pagamento: {forma_pagamento}{cartao}"
