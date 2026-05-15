@@ -139,7 +139,7 @@ def salvar_gasto_parcelado(gasto: dict, user_id: str, username: str) -> list[int
         num_parcelas  = gasto.get("num_parcelas", 1)
         valor_total   = gasto.get("valor")
         valor_parcela = gasto.get("valor_parcela") or round(valor_total / num_parcelas, 2)
-        data_base     = datetime.fromisoformat(gasto["data_hora"]) if gasto.get("data_hora") else datetime.now()
+        data_base     = datetime.fromisoformat(gasto["data_hora"]) if gasto.get("data_hora") else agora_br()
 
         registros = []
         for i in range(num_parcelas):
@@ -257,12 +257,34 @@ def gerar_relatorio_mensal(user_id: str, ano: int, mes: int) -> dict:
     try:
         user_id_str = str(user_id)
         
-        # Filtrar gastos (únicos + parcelas) que caem neste mês/ano
-        gastos_mes = session.query(Gasto).filter(
+        # Obter os cartões para regras de fechamento
+        cartoes = session.query(Cartao).filter(Cartao.telegram_user_id == user_id_str).all()
+        cartoes_dict = {c.nome.lower(): c for c in cartoes}
+
+        # Ampliar a janela de busca para o mês anterior e o próximo (para cobrir datas de fechamento)
+        data_inicio_busca = datetime(ano, mes, 1) - relativedelta(months=1)
+        data_fim_busca = datetime(ano, mes, 1) + relativedelta(months=2)
+        
+        gastos_brutos = session.query(Gasto).filter(
             Gasto.telegram_user_id == user_id_str,
-            extract('year', Gasto.data_hora) == ano,
-            extract('month', Gasto.data_hora) == mes
+            Gasto.data_hora >= data_inicio_busca,
+            Gasto.data_hora < data_fim_busca
         ).all()
+        
+        gastos_mes = []
+        for g in gastos_brutos:
+            rm, ry = g.data_hora.month, g.data_hora.year
+            if g.forma_pagamento and g.forma_pagamento.lower() in ["crédito", "credito"] and g.cartao:
+                c = cartoes_dict.get(g.cartao.lower())
+                if c:
+                    if g.data_hora.day < c.dia_fechamento:
+                        rm -= 1
+                        if rm == 0:
+                            rm = 12
+                            ry -= 1
+            
+            if rm == mes and ry == ano:
+                gastos_mes.append(g)
         
         # Filtrar gastos recorrentes ativos
         recorrentes = session.query(GastoRecorrente).filter(
@@ -293,9 +315,13 @@ def gerar_relatorio_mensal(user_id: str, ano: int, mes: int) -> dict:
                 pessoa = estabelecimento or "Desconhecido"
                 relatorio["dividas"][pessoa] = relatorio["dividas"].get(pessoa, 0.0) + valor
                 
-            if quem_gastou and quem_gastou.strip().lower() not in ["", "eu"]:
-                quem = quem_gastou.strip()
-                relatorio["a_receber"][quem] = relatorio["a_receber"].get(quem, 0.0) + valor
+            if quem_gastou:
+                pessoas = [p.strip() for p in quem_gastou.split(",")]
+                if pessoas:
+                    valor_por_pessoa = valor / len(pessoas)
+                    for p in pessoas:
+                        if p.lower() not in ["", "eu"]:
+                            relatorio["a_receber"][p] = relatorio["a_receber"].get(p, 0.0) + valor_por_pessoa
                 
         for g in gastos_mes:
             processar_item(g.valor_total, g.categoria, g.cartao, g.forma_pagamento, g.estabelecimento, g.quem_gastou)
@@ -312,7 +338,7 @@ def obter_gastos_parcelados_ativos(user_id: str):
     try:
         # Pega todos os gastos parcelados do usuário a partir de hoje
         # Consideraremos a hora atual ou o início do dia para pegar parcelas vencendo hoje ou no futuro
-        hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        hoje = agora_br().replace(hour=0, minute=0, second=0, microsecond=0)
         gastos = session.query(Gasto).filter(
             Gasto.telegram_user_id == str(user_id),
             Gasto.parcelado == True,

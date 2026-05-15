@@ -6,7 +6,7 @@ from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMar
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import re
 from openai import OpenAI
-from database import init_db, salvar_gasto_unico, salvar_gasto_parcelado, salvar_gasto_recorrente, deletar_gasto, obter_ou_criar_usuario, obter_cartoes, adicionar_cartao, remover_cartao, gerar_relatorio_mensal, obter_gastos_parcelados_ativos, obter_gastos_recorrentes_ativos, liberar_acesso_usuario, obter_usuarios_pendentes
+from database import init_db, salvar_gasto_unico, salvar_gasto_parcelado, salvar_gasto_recorrente, deletar_gasto, obter_ou_criar_usuario, obter_cartoes, adicionar_cartao, remover_cartao, gerar_relatorio_mensal, obter_gastos_parcelados_ativos, obter_gastos_recorrentes_ativos, liberar_acesso_usuario, obter_usuarios_pendentes, agora_br
 from dotenv import load_dotenv
 
 from dotenv import load_dotenv
@@ -32,29 +32,34 @@ Classifique o tipo do gasto:
 - "parcelado": foi dividido em parcelas
 - "recorrente": é uma cobrança que se repete todo mês (assinatura, aluguel, mensalidade, etc)
 
-Regra para terceiros: Se o usuário disser que deve ou pagou algo para outra pessoa (ex: "devo 30 para leticia", "paguei o joão"), coloque o nome dessa pessoa no campo "estabelecimento" e use a categoria "Terceiros/Dívidas".
+Regras específicas:
+- Terceiros: Se o usuário disser que deve ou pagou algo para outra pessoa (ex: "devo 30 para leticia", "paguei o joão"), coloque o nome dessa pessoa no campo "estabelecimento" e use a categoria "Terceiros/Dívidas".
+- Recorrentes: Se a forma de pagamento não for explicitamente informada, preencha como "Crédito". O campo "estabelecimento" deve ser o nome da marca da assinatura ou do serviço (ex: Netflix, Spotify, Academia), caso esteja disponível.
+- Compras compartilhadas/divididas: Se o usuário informar que dividiu um gasto com outras pessoas, divida o valor matematicamente pelo número de pessoas (o campo "Valor" deve ser o valor total dividido por pessoa) e retorne objetos separados dentro da lista "gastos", um para cada pessoa (colocando o nome dela no campo "quem_gastou"). Se ele não se incluir na divisão, coloque apenas o nome das outras pessoas.
 
 JSON esperado:
 {
   "entendido": true,
-  "tipo": "unico | parcelado | recorrente",
   "mensagem": "mensagem amigável confirmando o que entendeu, em português",
-  "gasto": {
-    "data_hora": "YYYY-MM-DD HH:MM:SS ou null se não souber a hora",
-    "descricao": "o que foi comprado / onde foi gasto",
-    "estabelecimento": "nome do lugar (ou nome da pessoa recebedora, se for pagamento a terceiros) ou null",
-    "valor": 0.00,
-    "valor_parcela": 0.00,
-    "moeda": "BRL",
-    "categoria": "uma dessas: Alimentação | Vestuário | Transporte | Saúde | Lazer | Moradia | Educação | Assinatura | Terceiros/Dívidas | Outro",
-    "quem_gastou": "nome da pessoa mencionada ou 'Eu' se for o próprio usuário",
-    "forma_pagamento": "Dinheiro | Pix | Débito | Crédito | Outro",
-    "cartao": "nome exato do cartão utilizado (da lista de cartões cadastrados), ou null se não foi usado cartão",
-    "parcelado": false,
-    "num_parcelas": null,
-    "dia_cobranca": null,
-    "observacoes": "qualquer detalhe extra relevante ou null"
-  }
+  "gastos": [
+    {
+      "tipo": "unico | parcelado | recorrente",
+      "data_hora": "YYYY-MM-DD HH:MM:SS ou null se não souber a hora",
+      "descricao": "o que foi comprado / onde foi gasto",
+      "estabelecimento": "nome do lugar (ou nome da pessoa recebedora, se for pagamento a terceiros) ou null",
+      "valor": 0.00,
+      "valor_parcela": 0.00,
+      "moeda": "BRL",
+      "categoria": "uma dessas: Alimentação | Vestuário | Transporte | Saúde | Lazer | Moradia | Educação | Assinatura | Terceiros/Dívidas | Outro",
+      "quem_gastou": "nome da pessoa mencionada ou 'Eu' se for o próprio usuário",
+      "forma_pagamento": "Dinheiro | Pix | Débito | Crédito | Outro",
+      "cartao": "nome exato do cartão utilizado (da lista de cartões cadastrados), ou null se não foi usado cartão",
+      "parcelado": false,
+      "num_parcelas": null,
+      "dia_cobranca": null,
+      "observacoes": "qualquer detalhe extra relevante ou null"
+    }
+  ]
 }
 
 Se a mensagem não for sobre um gasto, retorne:
@@ -221,40 +226,74 @@ async def confirmar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    gasto = dados["gasto"]
-    tipo = dados["tipo"]
+    gastos = dados.get("gastos", [])
+    if not gastos and "gasto" in dados:
+        gastos = [dados["gasto"]]
+    
     resposta_original = dados.get("resposta_original", query.message.text)
     user = update.effective_user
 
+    ids_salvos = {"unico": [], "parcelado": [], "recorrente": []}
+
     try:
-        if tipo == "recorrente":
-            gasto_id = salvar_gasto_recorrente(gasto, user.id, user.username)
-        elif tipo == "parcelado":
-            ids = salvar_gasto_parcelado(gasto, user.id, user.username)
-        else:
-            gasto_id = salvar_gasto_unico(gasto, user.id, user.username)
+        for gasto in gastos:
+            tipo = gasto.get("tipo", dados.get("tipo", "unico"))
+            if tipo == "recorrente":
+                gasto_id = salvar_gasto_recorrente(gasto, user.id, user.username)
+                ids_salvos["recorrente"].append(gasto_id)
+            elif tipo == "parcelado":
+                ids = salvar_gasto_parcelado(gasto, user.id, user.username)
+                ids_salvos["parcelado"].extend(ids)
+            else:
+                gasto_id = salvar_gasto_unico(gasto, user.id, user.username)
+                ids_salvos["unico"].append(gasto_id)
 
-        del context.user_data[pendencia_id]
-
-        if tipo == "parcelado":
-            ids_str = ",".join(str(i) for i in ids)
-            callback_data = f"desfazer|parcelado|{ids_str}"
-        elif tipo == "recorrente":
-            callback_data = f"desfazer|recorrente|{gasto_id}"
-        else:
-            callback_data = f"desfazer|unico|{gasto_id}"
+        context.user_data[pendencia_id]["ids_salvos"] = ids_salvos
 
         teclado = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Desfazer inserção", callback_data=callback_data)]
+            [InlineKeyboardButton("❌ Desfazer inserção", callback_data=f"desfazermulti|{pendencia_id}")]
         ])
 
         await query.edit_message_text(
-            resposta_original + "\n\n✅ _Gasto salvo com sucesso!_",
+            resposta_original + "\n\n✅ _Gasto(s) salvo(s) com sucesso!_",
             parse_mode="Markdown",
             reply_markup=teclado
         )
     except Exception as e:
         await query.edit_message_text(f"⚠️ Erro ao salvar no banco: {str(e)}")
+
+async def desfazer_multi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, pendencia_id = query.data.split("|")
+    dados = context.user_data.get(pendencia_id)
+
+    if not dados or "ids_salvos" not in dados:
+        await query.edit_message_text(
+            query.message.text + "\n\n⚠️ _Tempo expirado ou já desfeito._",
+            parse_mode="Markdown"
+        )
+        return
+
+    ids_salvos = dados["ids_salvos"]
+
+    try:
+        if ids_salvos.get("unico"):
+            deletar_gasto("unico", ids_salvos["unico"])
+        if ids_salvos.get("parcelado"):
+            deletar_gasto("unico", ids_salvos["parcelado"])
+        if ids_salvos.get("recorrente"):
+            deletar_gasto("recorrente", ids_salvos["recorrente"])
+
+        del context.user_data[pendencia_id]
+        
+        await query.edit_message_text(
+            query.message.text + "\n\n✅ _Inserção desfeita com sucesso!_",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await query.edit_message_text(f"⚠️ Erro ao desfazer: {str(e)}")
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -283,7 +322,7 @@ async def processar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     mensagem = update.message.text
-    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    agora = agora_br().strftime("%Y-%m-%d %H:%M:%S")
 
     cartoes = obter_cartoes(user.id)
     if cartoes:
@@ -319,48 +358,50 @@ async def processar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(dados.get("mensagem", "Não entendi. Tente descrever um gasto."))
         return
 
-    gasto = dados["gasto"]
-    tipo  = dados.get("tipo", "unico")
+    lista_gastos = dados.get("gastos") or ([dados["gasto"]] if "gasto" in dados else [])
+    
+    if not lista_gastos:
+        await update.message.reply_text("Não encontrei os dados do gasto.")
+        return
 
-    if gasto.get("data_hora"):
-        dt = datetime.fromisoformat(gasto["data_hora"])
-        if dt.hour == 0 and dt.minute == 0:
-            # mantém a data mas usa a hora atual
-            gasto["data_hora"] = dt.strftime("%Y-%m-%d") + " " + datetime.now().strftime("%H:%M:%S")
-    else:
-        gasto["data_hora"] = agora
+    resposta = f"{dados.get('mensagem', 'Entendido!')}\n\n*Resumo dos Gastos:*"
 
-    # Monta resposta amigável
-    parcelas = f" em {gasto['num_parcelas']}x" if gasto.get("parcelado") else ""
-    cartao   = f" ({gasto['cartao']})" if gasto.get("cartao") else ""
-    forma_pagamento = gasto.get("forma_pagamento", "Não informada")
-    icone    = "🔁" if tipo == "recorrente" else "💳" if tipo == "parcelado" else "💸"
+    for gasto in lista_gastos:
+        tipo = gasto.get("tipo", dados.get("tipo", "unico"))
+        gasto["tipo"] = tipo
+        
+        if gasto.get("data_hora"):
+            dt = datetime.fromisoformat(gasto["data_hora"])
+            if dt.hour == 0 and dt.minute == 0:
+                gasto["data_hora"] = dt.strftime("%Y-%m-%d") + " " + agora_br().strftime("%H:%M:%S")
+        else:
+            gasto["data_hora"] = agora
 
-    resposta = (
-        f"{dados['mensagem']}\n\n"
-        f"{icone} *Resumo:*\n"
-        f"• 📅 Data: {gasto['data_hora'] or 'Não informada'}\n"
-        f"• 🏪 Local: {gasto['estabelecimento'] or gasto['descricao']}\n"
-        f"• 💰 Valor: R$ {gasto['valor']:.2f}{parcelas}\n"
-        f"• 💳 Forma Pagamento: {forma_pagamento}{cartao}\n"
-        f"• 🏷️ Categoria: {gasto['categoria']}\n"
-        f"• 👤 Quem: {gasto['quem_gastou']}\n"
-    )
+        parcelas = f" em {gasto['num_parcelas']}x" if gasto.get("parcelado") else ""
+        cartao   = f" ({gasto['cartao']})" if gasto.get("cartao") else ""
+        forma_pagamento = gasto.get("forma_pagamento", "Não informada")
+        icone    = "🔁" if tipo == "recorrente" else "💳" if tipo == "parcelado" else "💸"
 
-    if tipo == "recorrente" and gasto.get("dia_cobranca"):
-        resposta += f"• 📆 Todo dia: {gasto['dia_cobranca']}\n"
+        resposta += f"\n\n{icone} *{gasto.get('descricao') or 'Gasto'}*"
+        resposta += f"\n• 🏪 Local: {gasto.get('estabelecimento') or '-'}"
+        resposta += f"\n• 💰 Valor: R$ {gasto.get('valor', 0):.2f}{parcelas}"
+        resposta += f"\n• 💳 Pagamento: {forma_pagamento}{cartao}"
+        resposta += f"\n• 🏷️ Categoria: {gasto.get('categoria', 'Outro')}"
+        resposta += f"\n• 👤 Quem: {gasto.get('quem_gastou', 'Eu')}"
 
-    if tipo == "parcelado" and gasto.get("num_parcelas"):
-        valor_parcela = gasto.get("valor_parcela") or round(gasto["valor"] / gasto["num_parcelas"], 2)
-        resposta += f"• 🔢 Parcela: R$ {valor_parcela:.2f}/mês\n"
+        if tipo == "recorrente" and gasto.get("dia_cobranca"):
+            resposta += f"\n• 📆 Todo dia: {gasto['dia_cobranca']}"
 
-    if gasto.get("observacoes"):
-        resposta += f"• 📝 Obs: {gasto['observacoes']}\n"
+        if tipo == "parcelado" and gasto.get("num_parcelas"):
+            valor_parcela = gasto.get("valor_parcela") or round(gasto.get("valor", 0) / gasto["num_parcelas"], 2)
+            resposta += f"\n• 🔢 Parcela: R$ {valor_parcela:.2f}/mês"
+
+        if gasto.get("observacoes"):
+            resposta += f"\n• 📝 Obs: {gasto['observacoes']}"
 
     pendencia_id = str(uuid.uuid4())[:8]
     context.user_data[pendencia_id] = {
-        "gasto": gasto,
-        "tipo": tipo,
+        "gastos": lista_gastos,
         "resposta_original": resposta
     }
 
@@ -381,7 +422,7 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Acesso restrito.")
         return
 
-    agora = datetime.now()
+    agora = agora_br()
     ano = agora.year
     mes = agora.month
     
@@ -552,7 +593,8 @@ app.add_handler(CommandHandler("recorrentes", cmd_recorrentes))
 app.add_handler(CommandHandler("pendentes", cmd_pendentes))
 app.add_handler(CommandHandler("liberar", cmd_liberar))
 app.add_handler(CallbackQueryHandler(delcartao_callback, pattern="^delcartao"))
-app.add_handler(CallbackQueryHandler(desfazer, pattern="^desfazer"))
+app.add_handler(CallbackQueryHandler(desfazer_multi, pattern="^desfazermulti"))
+app.add_handler(CallbackQueryHandler(desfazer, pattern=r"^desfazer\|"))
 app.add_handler(CallbackQueryHandler(confirmar, pattern="^confirmar"))
 app.add_handler(CallbackQueryHandler(cancelar, pattern="^cancelar"))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, processar_gasto))
