@@ -53,7 +53,7 @@ JSON esperado:
       "categoria": "uma dessas: Alimentação | Vestuário | Transporte | Saúde | Lazer | Moradia | Educação | Assinatura | Terceiros/Dívidas | Outro",
       "quem_gastou": "nome da pessoa mencionada ou 'Eu' se for o próprio usuário",
       "forma_pagamento": "Dinheiro | Pix | Débito | Crédito | Outro",
-      "cartao": "nome exato do cartão utilizado (da lista de cartões cadastrados), ou null se não foi usado cartão",
+      "cartao": "nome do cartão utilizado, ou null se não foi usado cartão",
       "parcelado": false,
       "num_parcelas": null,
       "dia_cobranca": null,
@@ -369,6 +369,22 @@ async def processar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not lista_gastos:
         await update.message.reply_text("Não encontrei os dados do gasto.")
         return
+
+    cartoes_db = obter_cartoes(user.id)
+    nomes_cartoes = [c.nome.lower() for c in cartoes_db]
+
+    for gasto in lista_gastos:
+        cartao_gasto = gasto.get("cartao")
+        if cartao_gasto and cartao_gasto.lower() not in nomes_cartoes:
+            await update.message.reply_text(
+                f"⚠️ *Oink!* Você mencionou o cartão *{cartao_gasto}*, mas ele ainda não está no meu cofrinho.\n\n"
+                "Para eu registrar certinho na sua fatura, adicione ele primeiro usando o comando:\n"
+                "`/addcartao NomeDoCartao DiaQueVira DiaQuePaga`\n\n"
+                "Exemplo: `/addcartao Nubank 14 20`\n\n"
+                "Depois de adicionar, é só me mandar o gasto de novo!",
+                parse_mode="Markdown"
+            )
+            return
 
     resposta = f"{dados.get('mensagem', 'Entendido!')}\n\n*Resumo dos Gastos:*"
 
