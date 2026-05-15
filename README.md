@@ -1,6 +1,6 @@
-# OincOinc 🐷💰
+# Oinkie 🐷💰
 
-O **OincOinc** é um assistente financeiro pessoal em formato de bot do Telegram. Ele utiliza Inteligência Artificial (OpenAI) para interpretar mensagens em linguagem natural e transformar seus textos simples em registros financeiros organizados.
+O **Oinkie** é um assistente financeiro pessoal em formato de bot do Telegram. Ele utiliza Inteligência Artificial (OpenAI) para interpretar mensagens em linguagem natural e transformar seus textos simples em registros financeiros organizados.
 
 Chega de planilhas manuais chatas! Apenas mande um texto para o bot dizendo *"Comprei um tênis de 200 reais no cartão Nubank em 4x"* e ele fará todo o trabalho de classificação e registro no seu banco de dados.
 

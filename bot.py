@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not permitido:
         await update.message.reply_text(
-            "Olá! 💰 Sou o *OincOinc*, seu assistente financeiro pessoal.\n\n"
+            "Olá! 🐷 Sou o *Oinkie*, seu porquinho assistente financeiro.\n\n"
             "⚠️ *Acesso Restrito*\n"
             "Seu usuário foi registrado, mas você ainda não tem permissão para usar o bot. "
             "Peça ao administrador para liberar seu acesso (mudar `permitido` para `true` no banco).",
@@ -112,8 +112,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "Olá! 💰 Sou o *OincOinc*, seu assistente financeiro pessoal.\n\n"
-        "Me conta seus gastos de forma natural e eu organizo tudo pra você!\n\n"
+        "Olá! 🐷 Sou o *Oinkie*, seu porquinho assistente financeiro.\n\n"
+        "Me conta seus gastos de forma natural e eu coloco tudo no cofrinho pra você!\n\n"
         "Digite /ajuda para ver exemplos e o que eu consigo registrar.",
         parse_mode="Markdown"
     )
@@ -361,7 +361,7 @@ async def processar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not dados.get("entendido"):
-        await update.message.reply_text(dados.get("mensagem", "Não entendi. Tente descrever um gasto."))
+        await update.message.reply_text("🐷 *Oink!* Sou um porquinho faminto apenas por dados financeiros.\n\nPor favor, me conte sobre um gasto, dívida ou assinatura para eu guardar no cofre. Exemplo:\n_'Gastei 45 no Burger King'_\n\nOu digite /ajuda para ver todos os comandos.", parse_mode="Markdown")
         return
 
     lista_gastos = dados.get("gastos") or ([dados["gasto"]] if "gasto" in dados else [])
