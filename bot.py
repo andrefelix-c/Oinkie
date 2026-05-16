@@ -6,7 +6,7 @@ from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMar
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import re
 from openai import OpenAI
-from database import init_db, salvar_gasto_unico, salvar_gasto_parcelado, salvar_gasto_recorrente, deletar_gasto, obter_ou_criar_usuario, obter_cartoes, adicionar_cartao, remover_cartao, gerar_relatorio_mensal, obter_gastos_parcelados_ativos, obter_gastos_recorrentes_ativos, liberar_acesso_usuario, obter_usuarios_pendentes, agora_br
+from database import init_db, salvar_gasto_unico, salvar_gasto_parcelado, salvar_gasto_recorrente, deletar_gasto, obter_ou_criar_usuario, obter_cartoes, adicionar_cartao, remover_cartao, gerar_relatorio_mensal, obter_gastos_parcelados_ativos, obter_gastos_recorrentes_ativos, cancelar_gasto_recorrente, liberar_acesso_usuario, obter_usuarios_pendentes, agora_br
 from dotenv import load_dotenv
 
 from dotenv import load_dotenv
@@ -33,6 +33,8 @@ Classifique o tipo do gasto:
 - "recorrente": é uma cobrança que se repete todo mês (assinatura, aluguel, mensalidade, etc)
 
 Regras específicas:
+- Estabelecimento vs Pessoa: Nomes de lojas, apps e empresas (ex: iFood, Uber, Mercado) sempre vão no campo "estabelecimento". Nomes de pessoas só vão em "estabelecimento" se for um pagamento de dívida direto para elas.
+- Quem gastou: Preste muita atenção! Se a mensagem disser que a compra foi feita "por [nome]", "pelo/pela [nome]", ou que "[nome] gastou", o campo "quem_gastou" DEVE ser preenchido com esse nome (ex: "Letícia"). Se o usuário fez a compra para ele mesmo, use "Eu".
 - Terceiros: Se o usuário disser que deve ou pagou algo para outra pessoa (ex: "devo 30 para leticia", "paguei o joão"), coloque o nome dessa pessoa no campo "estabelecimento" e use a categoria "Terceiros/Dívidas".
 - Recorrentes: Se a forma de pagamento não for explicitamente informada, preencha como "Crédito". O campo "estabelecimento" deve ser o nome da marca da assinatura ou do serviço (ex: Netflix, Spotify, Academia), caso esteja disponível.
 - Compras compartilhadas/divididas: Se o usuário informar que dividiu um gasto com outras pessoas, divida o valor matematicamente pelo número de pessoas (o campo "Valor" deve ser o valor total dividido por pessoa) e retorne objetos separados dentro da lista "gastos", um para cada pessoa (colocando o nome dela no campo "quem_gastou"). Se ele não se incluir na divisão, coloque apenas o nome das outras pessoas.
@@ -559,14 +561,32 @@ async def cmd_recorrentes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     texto = "🔁 *Suas Contas Recorrentes Ativas:*\n\n"
+    botoes = []
+    
     for g in gastos:
         local = f" ({g.estabelecimento})" if g.estabelecimento else ""
         dia = f"Todo dia {g.dia_cobranca}" if g.dia_cobranca else "Dia não informado"
         texto += f"• *{g.descricao}*{local}\n"
         texto += f"  Valor: R$ {g.valor:.2f}\n"
         texto += f"  Cobrança: {dia}\n\n"
+        
+        botoes.append([InlineKeyboardButton(f"❌ Cancelar {g.descricao}", callback_data=f"cancelrec|{g.id}")])
 
-    await update.message.reply_text(texto, parse_mode="Markdown")
+    teclado = InlineKeyboardMarkup(botoes)
+    await update.message.reply_text(texto, parse_mode="Markdown", reply_markup=teclado)
+
+async def cancelrec_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    _, gasto_id = query.data.split("|")
+    user = update.effective_user
+    
+    sucesso = cancelar_gasto_recorrente(int(gasto_id), user.id)
+    if sucesso:
+        await query.edit_message_text(f"{query.message.text}\n\n✅ _Assinatura cancelada com sucesso!_", parse_mode="Markdown")
+    else:
+        await query.edit_message_text(f"{query.message.text}\n\n⚠️ _Não foi possível cancelar a assinatura._", parse_mode="Markdown")
 
 async def ignorar_nao_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
@@ -627,6 +647,7 @@ app.add_handler(CallbackQueryHandler(desfazer_multi, pattern="^desfazermulti"))
 app.add_handler(CallbackQueryHandler(desfazer, pattern=r"^desfazer\|"))
 app.add_handler(CallbackQueryHandler(confirmar, pattern="^confirmar"))
 app.add_handler(CallbackQueryHandler(cancelar, pattern="^cancelar"))
+app.add_handler(CallbackQueryHandler(cancelrec_callback, pattern=r"^cancelrec\|"))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, processar_gasto))
 app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, ignorar_nao_texto))
 

@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Text, extract
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Text, extract, or_
 from sqlalchemy.orm import declarative_base, sessionmaker
 from dotenv import load_dotenv
 
@@ -303,25 +303,30 @@ def gerar_relatorio_mensal(user_id: str, ano: int, mes: int) -> dict:
         def processar_item(valor, categoria, cartao, forma_pagamento, estabelecimento, quem_gastou):
             if valor is None: return
             
-            relatorio["total_gasto"] += valor
+            valor_meu = valor
             
-            cat = categoria or "Sem Categoria"
-            relatorio["por_categoria"][cat] = relatorio["por_categoria"].get(cat, 0.0) + valor
-            
-            if forma_pagamento and forma_pagamento.lower() == "crédito" and cartao:
-                relatorio["por_cartao"][cartao] = relatorio["por_cartao"].get(cartao, 0.0) + valor
-                
-            if categoria == "Terceiros/Dívidas":
-                pessoa = estabelecimento or "Desconhecido"
-                relatorio["dividas"][pessoa] = relatorio["dividas"].get(pessoa, 0.0) + valor
-                
             if quem_gastou:
                 pessoas = [p.strip() for p in quem_gastou.split(",")]
                 if pessoas:
                     valor_por_pessoa = valor / len(pessoas)
+                    valor_meu = 0
                     for p in pessoas:
                         if p.lower() not in ["", "eu"]:
                             relatorio["a_receber"][p] = relatorio["a_receber"].get(p, 0.0) + valor_por_pessoa
+                        else:
+                            valor_meu += valor_por_pessoa
+                            
+            relatorio["total_gasto"] += valor_meu
+            
+            cat = categoria or "Sem Categoria"
+            relatorio["por_categoria"][cat] = relatorio["por_categoria"].get(cat, 0.0) + valor_meu
+            
+            if forma_pagamento and forma_pagamento.lower() in ["crédito", "credito"] and cartao:
+                relatorio["por_cartao"][cartao] = relatorio["por_cartao"].get(cartao, 0.0) + valor_meu
+                
+            if categoria == "Terceiros/Dívidas":
+                pessoa = estabelecimento or "Desconhecido"
+                relatorio["dividas"][pessoa] = relatorio["dividas"].get(pessoa, 0.0) + valor
                 
         for g in gastos_mes:
             processar_item(g.valor_total, g.categoria, g.cartao, g.forma_pagamento, g.estabelecimento, g.quem_gastou)
@@ -342,7 +347,12 @@ def obter_gastos_parcelados_ativos(user_id: str):
         gastos = session.query(Gasto).filter(
             Gasto.telegram_user_id == str(user_id),
             Gasto.parcelado == True,
-            Gasto.data_hora >= hoje
+            Gasto.data_hora >= hoje,
+            or_(
+                Gasto.quem_gastou == None,
+                Gasto.quem_gastou == "",
+                Gasto.quem_gastou.ilike("eu")
+            )
         ).order_by(Gasto.data_hora).all()
         return gastos
     finally:
@@ -353,8 +363,31 @@ def obter_gastos_recorrentes_ativos(user_id: str):
     try:
         return session.query(GastoRecorrente).filter(
             GastoRecorrente.telegram_user_id == str(user_id),
-            GastoRecorrente.ativo == True
+            GastoRecorrente.ativo == True,
+            or_(
+                GastoRecorrente.quem_gastou == None,
+                GastoRecorrente.quem_gastou == "",
+                GastoRecorrente.quem_gastou.ilike("eu")
+            )
         ).all()
+    finally:
+        session.close()
+
+def cancelar_gasto_recorrente(gasto_id: int, user_id: str) -> bool:
+    session = Session()
+    try:
+        gasto = session.query(GastoRecorrente).filter(
+            GastoRecorrente.id == gasto_id,
+            GastoRecorrente.telegram_user_id == str(user_id)
+        ).first()
+        if gasto:
+            gasto.ativo = False
+            session.commit()
+            return True
+        return False
+    except Exception as e:
+        session.rollback()
+        raise e
     finally:
         session.close()
 
