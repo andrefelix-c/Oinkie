@@ -104,6 +104,71 @@ def obter_ou_criar_usuario(user_id: str, username: str) -> bool:
     finally:
         session.close()
 
+def obter_pessoas_registradas(user_id: str) -> list[str]:
+    session = Session()
+    try:
+        user_id_str = str(user_id)
+        pessoas_set = set()
+
+        # Pessoas de quem_gastou nos Gastos
+        gastos_quem = session.query(Gasto.quem_gastou).filter(
+            Gasto.telegram_user_id == user_id_str,
+            Gasto.quem_gastou.isnot(None),
+            Gasto.quem_gastou != "",
+            Gasto.quem_gastou != "Eu"
+        ).all()
+        
+        for (quem,) in gastos_quem:
+            if quem:
+                for p in quem.split(","):
+                    p = p.strip()
+                    if p.lower() != "eu":
+                        pessoas_set.add(p.title())
+
+        # Pessoas de estabelecimentos onde categoria = Terceiros/Dívidas
+        gastos_est = session.query(Gasto.estabelecimento).filter(
+            Gasto.telegram_user_id == user_id_str,
+            Gasto.categoria == "Terceiros/Dívidas",
+            Gasto.estabelecimento.isnot(None),
+            Gasto.estabelecimento != ""
+        ).all()
+        
+        for (est,) in gastos_est:
+            if est:
+                pessoas_set.add(est.strip().title())
+
+        # Pessoas de quem_gastou nos Gastos Recorrentes
+        recorrentes_quem = session.query(GastoRecorrente.quem_gastou).filter(
+            GastoRecorrente.telegram_user_id == user_id_str,
+            GastoRecorrente.quem_gastou.isnot(None),
+            GastoRecorrente.quem_gastou != "",
+            GastoRecorrente.quem_gastou != "Eu"
+        ).all()
+        
+        for (quem,) in recorrentes_quem:
+            if quem:
+                for p in quem.split(","):
+                    p = p.strip()
+                    if p.lower() != "eu":
+                        pessoas_set.add(p.title())
+
+        # Pessoas de estabelecimentos em Recorrentes onde categoria = Terceiros/Dívidas
+        recorrentes_est = session.query(GastoRecorrente.estabelecimento).filter(
+            GastoRecorrente.telegram_user_id == user_id_str,
+            GastoRecorrente.categoria == "Terceiros/Dívidas",
+            GastoRecorrente.estabelecimento.isnot(None),
+            GastoRecorrente.estabelecimento != ""
+        ).all()
+        
+        for (est,) in recorrentes_est:
+            if est:
+                pessoas_set.add(est.strip().title())
+
+        return sorted(list(pessoas_set))
+    except Exception as e:
+        return []
+    finally:
+        session.close()
 
 def salvar_gasto_unico(gasto: dict, user_id: str, username: str) -> int:
     session = Session()
@@ -338,23 +403,113 @@ def gerar_relatorio_mensal(user_id: str, ano: int, mes: int) -> dict:
     finally:
         session.close()
 
+def obter_devedores_detalhado(user_id: str, ano: int, mes: int) -> dict:
+    session = Session()
+    try:
+        user_id_str = str(user_id)
+        
+        cartoes = session.query(Cartao).filter(Cartao.telegram_user_id == user_id_str).all()
+        cartoes_dict = {c.nome.lower(): c for c in cartoes}
+
+        data_inicio_busca = datetime(ano, mes, 1) - relativedelta(months=1)
+        data_fim_busca = datetime(ano, mes, 1) + relativedelta(months=2)
+        
+        gastos_brutos = session.query(Gasto).filter(
+            Gasto.telegram_user_id == user_id_str,
+            Gasto.data_hora >= data_inicio_busca,
+            Gasto.data_hora < data_fim_busca
+        ).all()
+        
+        gastos_mes = []
+        for g in gastos_brutos:
+            rm, ry = g.data_hora.month, g.data_hora.year
+            if g.forma_pagamento and g.forma_pagamento.lower() in ["crédito", "credito"] and g.cartao:
+                c = cartoes_dict.get(g.cartao.lower())
+                if c:
+                    if g.data_hora.day < c.dia_fechamento:
+                        rm -= 1
+                        if rm == 0:
+                            rm = 12
+                            ry -= 1
+            
+            if rm == mes and ry == ano:
+                gastos_mes.append(g)
+        
+        recorrentes = session.query(GastoRecorrente).filter(
+            GastoRecorrente.telegram_user_id == user_id_str,
+            GastoRecorrente.ativo == True
+        ).all()
+        
+        devedores = {}
+        
+        def add_detail(pessoa, desc, valor, data, tipo):
+            if pessoa not in devedores:
+                devedores[pessoa] = {"total": 0.0, "itens": []}
+            devedores[pessoa]["total"] += valor
+            devedores[pessoa]["itens"].append({
+                "descricao": desc,
+                "valor": valor,
+                "data": data,
+                "tipo": tipo
+            })
+
+        for g in gastos_mes:
+            quem = g.quem_gastou
+            if quem:
+                pessoas = [p.strip() for p in quem.split(",")]
+                if pessoas:
+                    valor_pp = g.valor_total / len(pessoas)
+                    for p in pessoas:
+                        if p.lower() not in ["", "eu"]:
+                            tipo = "parcelado" if g.parcelado else "unico"
+                            add_detail(p, g.descricao, valor_pp, g.data_hora, tipo)
+                            
+        for r in recorrentes:
+            quem = r.quem_gastou
+            if quem:
+                pessoas = [p.strip() for p in quem.split(",")]
+                if pessoas:
+                    valor_pp = r.valor / len(pessoas)
+                    for p in pessoas:
+                        if p.lower() not in ["", "eu"]:
+                            add_detail(p, r.descricao, valor_pp, None, "recorrente")
+                            
+        return devedores
+    finally:
+        session.close()
 def obter_gastos_parcelados_ativos(user_id: str):
     session = Session()
     try:
-        # Pega todos os gastos parcelados do usuário a partir de hoje
-        # Consideraremos a hora atual ou o início do dia para pegar parcelas vencendo hoje ou no futuro
-        hoje = agora_br().replace(hour=0, minute=0, second=0, microsecond=0)
-        gastos = session.query(Gasto).filter(
-            Gasto.telegram_user_id == str(user_id),
+        user_id_str = str(user_id)
+        agora = agora_br()
+        mes_atual = agora.month
+        ano_atual = agora.year
+        
+        data_inicio = agora.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - relativedelta(months=2)
+        
+        cartoes = session.query(Cartao).filter(Cartao.telegram_user_id == user_id_str).all()
+        cartoes_dict = {c.nome.lower(): c for c in cartoes}
+        
+        gastos_brutos = session.query(Gasto).filter(
+            Gasto.telegram_user_id == user_id_str,
             Gasto.parcelado == True,
-            Gasto.data_hora >= hoje,
+            Gasto.data_hora >= data_inicio,
             or_(
                 Gasto.quem_gastou == None,
                 Gasto.quem_gastou == "",
                 Gasto.quem_gastou.ilike("eu")
             )
         ).order_by(Gasto.data_hora).all()
-        return gastos
+        
+        gastos_ativos = []
+        for g in gastos_brutos:
+            rm, ry = g.data_hora.month, g.data_hora.year
+            
+            # Apenas considera a parcela pendente se for do mês atual ou futuro
+            if (ry > ano_atual) or (ry == ano_atual and rm >= mes_atual):
+                gastos_ativos.append(g)
+                
+        return gastos_ativos
     finally:
         session.close()
 

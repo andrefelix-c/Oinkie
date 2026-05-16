@@ -6,7 +6,7 @@ from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMar
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import re
 from openai import OpenAI
-from database import init_db, salvar_gasto_unico, salvar_gasto_parcelado, salvar_gasto_recorrente, deletar_gasto, obter_ou_criar_usuario, obter_cartoes, adicionar_cartao, remover_cartao, gerar_relatorio_mensal, obter_gastos_parcelados_ativos, obter_gastos_recorrentes_ativos, cancelar_gasto_recorrente, liberar_acesso_usuario, obter_usuarios_pendentes, agora_br
+from database import init_db, salvar_gasto_unico, salvar_gasto_parcelado, salvar_gasto_recorrente, deletar_gasto, obter_ou_criar_usuario, obter_cartoes, adicionar_cartao, remover_cartao, gerar_relatorio_mensal, obter_gastos_parcelados_ativos, obter_gastos_recorrentes_ativos, cancelar_gasto_recorrente, liberar_acesso_usuario, obter_usuarios_pendentes, agora_br, obter_devedores_detalhado, obter_pessoas_registradas
 from dotenv import load_dotenv
 
 from dotenv import load_dotenv
@@ -38,7 +38,10 @@ Regras específicas:
 - Terceiros: Se o usuário disser que deve ou pagou algo para outra pessoa (ex: "devo 30 para leticia", "paguei o joão"), coloque o nome dessa pessoa no campo "estabelecimento" e use a categoria "Terceiros/Dívidas".
 - Recorrentes: Se a forma de pagamento não for explicitamente informada, preencha como "Crédito". O campo "estabelecimento" deve ser o nome da marca da assinatura ou do serviço (ex: Netflix, Spotify, Academia), caso esteja disponível.
 - Compras compartilhadas/divididas: Se o usuário informar que dividiu um gasto com outras pessoas, divida o valor matematicamente pelo número de pessoas (o campo "Valor" deve ser o valor total dividido por pessoa) e retorne objetos separados dentro da lista "gastos", um para cada pessoa (colocando o nome dela no campo "quem_gastou"). Se ele não se incluir na divisão, coloque apenas o nome das outras pessoas.
+- Padronização de Nomes: SEMPRE que preencher "quem_gastou" ou "estabelecimento" com o nome de uma pessoa, verifique se há um nome correspondente (mesmo que com pequenas variações de acento ou letra minúscula) na lista de Pessoas Registradas e use EXATAMENTE a grafia da lista.
 
+Pessoas Registradas: {lista_pessoas}
+Cartões Registrados: {lista_cartoes}
 JSON esperado:
 {
   "entendido": true,
@@ -83,6 +86,7 @@ async def configurar_comandos(app):
         BotCommand("relatorio", "Ver o relatório de gastos do mês"),
         BotCommand("parceladas", "Ver contas parceladas ativas"),
         BotCommand("recorrentes", "Ver contas recorrentes ativas"),
+        BotCommand("receber", "Ver quem está te devendo"),
     ]
     
     await app.bot.set_my_commands(comandos_basicos)
@@ -337,8 +341,14 @@ async def processar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lista_cartoes = ", ".join([c.nome for c in cartoes])
     else:
         lista_cartoes = "Nenhum cartão cadastrado"
+        
+    pessoas = obter_pessoas_registradas(user.id)
+    if pessoas:
+        lista_pessoas = ", ".join(pessoas)
+    else:
+        lista_pessoas = "Nenhuma pessoa registrada ainda"
 
-    system = SYSTEM_PROMPT.replace("{data_hoje}", agora).replace("{lista_cartoes}", lista_cartoes)
+    system = SYSTEM_PROMPT.replace("{data_hoje}", agora).replace("{lista_cartoes}", lista_cartoes).replace("{lista_pessoas}", lista_pessoas)
 
     await update.message.reply_chat_action("typing")
 
@@ -632,6 +642,86 @@ async def cmd_liberar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ Usuário `{target_id}` não encontrado no banco de dados.", parse_mode="Markdown")
 
+async def cmd_receber(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not obter_ou_criar_usuario(user.id, user.username):
+        await update.message.reply_text("⚠️ Acesso restrito.")
+        return
+
+    agora = agora_br()
+    ano = agora.year
+    mes = agora.month
+    
+    if context.args:
+        try:
+            mes_ano = context.args[0].split("/")
+            mes = int(mes_ano[0])
+            if len(mes_ano) > 1:
+                ano = int(mes_ano[1])
+        except (ValueError, IndexError):
+            await update.message.reply_text("⚠️ Formato inválido. Use: /receber ou /receber MM/AAAA")
+            return
+
+    devedores = obter_devedores_detalhado(user.id, ano, mes)
+    
+    if not devedores:
+        await update.message.reply_text(f"🎉 Ninguém está te devendo nada no mês {mes:02d}/{ano}!")
+        return
+
+    texto = f"🤑 *Quem me deve ({mes:02d}/{ano}):*\n\n"
+    botoes = []
+    
+    for pessoa, dados_pessoa in devedores.items():
+        total = dados_pessoa["total"]
+        texto += f"• *{pessoa}:* R$ {total:.2f}\n"
+        botoes.append([InlineKeyboardButton(f"📄 Detalhar {pessoa}", callback_data=f"detalhereceber|{pessoa[:15]}|{ano}|{mes}")])
+        
+    teclado = InlineKeyboardMarkup(botoes)
+    await update.message.reply_text(texto, parse_mode="Markdown", reply_markup=teclado)
+
+async def detalhereceber_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    partes = query.data.split("|")
+    pessoa_query = partes[1]
+    ano = int(partes[2])
+    mes = int(partes[3])
+    user = update.effective_user
+    
+    devedores = obter_devedores_detalhado(user.id, ano, mes)
+    
+    pessoa_real = None
+    for p in devedores.keys():
+        if p.startswith(pessoa_query):
+            pessoa_real = p
+            break
+            
+    if not pessoa_real:
+        await query.message.reply_text("⚠️ Detalhes não encontrados para essa pessoa.")
+        return
+        
+    itens = devedores[pessoa_real]["itens"]
+    total_devido = devedores[pessoa_real]["total"]
+    
+    texto = f"📄 *Detalhes do que {pessoa_real} deve ({mes:02d}/{ano}):*\n"
+    texto += f"Total: R$ {total_devido:.2f}\n\n"
+    
+    for i in itens:
+        tipo = i["tipo"]
+        desc = i["descricao"]
+        valor = i["valor"]
+        
+        if tipo == "recorrente":
+            texto += f"• {desc}: R$ {valor:.2f} (🔁 Recorrente)\n"
+        else:
+            data_str = "Data Desconhecida"
+            if i["data"]:
+                data_str = i["data"].strftime("%d/%m")
+            texto += f"• {data_str}: {desc} - R$ {valor:.2f}\n"
+            
+    await query.message.reply_text(texto, parse_mode="Markdown")
+
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ajuda", ajuda))
@@ -640,6 +730,7 @@ app.add_handler(CommandHandler("cartoes", cmd_cartoes))
 app.add_handler(CommandHandler("relatorio", cmd_relatorio))
 app.add_handler(CommandHandler("parceladas", cmd_parceladas))
 app.add_handler(CommandHandler("recorrentes", cmd_recorrentes))
+app.add_handler(CommandHandler("receber", cmd_receber))
 app.add_handler(CommandHandler("pendentes", cmd_pendentes))
 app.add_handler(CommandHandler("liberar", cmd_liberar))
 app.add_handler(CallbackQueryHandler(delcartao_callback, pattern="^delcartao"))
@@ -648,6 +739,7 @@ app.add_handler(CallbackQueryHandler(desfazer, pattern=r"^desfazer\|"))
 app.add_handler(CallbackQueryHandler(confirmar, pattern="^confirmar"))
 app.add_handler(CallbackQueryHandler(cancelar, pattern="^cancelar"))
 app.add_handler(CallbackQueryHandler(cancelrec_callback, pattern=r"^cancelrec\|"))
+app.add_handler(CallbackQueryHandler(detalhereceber_callback, pattern=r"^detalhereceber\|"))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, processar_gasto))
 app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, ignorar_nao_texto))
 
