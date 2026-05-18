@@ -7,7 +7,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-engine = create_engine(os.environ["DATABASE_URL"])
+engine = create_engine(
+    os.environ["DATABASE_URL"],
+    pool_pre_ping=True,        # testa a conexão antes de usar
+    pool_recycle=300,          # reconecta a cada 5 minutos
+    pool_size=5,
+    max_overflow=10
+)
+
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
